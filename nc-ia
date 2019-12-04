@@ -1,0 +1,91 @@
+#!/usr/bin/env python3
+
+import errno
+import os
+import pty
+import tty
+import sys
+import signal
+
+from select import select
+from subprocess import Popen
+from subprocess import check_output
+from pynput.keyboard import Key, Listener
+
+commands = []
+
+def run(cmd=None, interactive=False):
+    masters = None
+    slaves = None
+    restore = None
+
+    def on_press(key):
+        nonlocal restore
+        if key == Key.esc and restore is None:
+            os.write(slaves[2], '\npython -c \'import pty; pty.spawn("/bin/bash")\'; exit\n'.encode())
+            restore = check_output(["stty", "-g"])
+            os.system("stty raw -echo")
+            os.write(slaves[2], '\nreset; export SHELL=bash; export TERM=xterm-256-color\n'.encode())
+            return False
+
+    # Collect events until released
+    listener = Listener(
+            on_press=on_press)
+    listener.start()
+
+    masters, slaves = zip(pty.openpty(), pty.openpty(), pty.openpty())
+    for master in masters:
+        tty.setraw(master)
+    for slave in slaves:
+        tty.setraw(slave)
+
+    if interactive:
+        cmd = ["/bin/bash", "-i", "-c", cmd]
+    else:
+        cmd = cmd.split()
+
+    p = Popen(cmd, stdin=masters[2], stdout=slaves[0], stderr=slaves[1])
+    try:
+        for fd in slaves[:2]:
+            os.close(fd)  # no input
+
+        readable = {
+            masters[0]: sys.stdout.buffer,  # store buffers seperately
+            masters[1]: sys.stderr.buffer,
+            sys.stdin.fileno(): slaves[2]
+        }
+
+        while p.poll() is None:
+            for fd in select(readable, [], [])[0]:
+                try:
+                    data = os.read(fd, 1024)  # read available
+                except OSError as e:
+                    if e.errno != errno.EIO:
+                        raise  # XXX cleanup
+                    del readable[fd]  # EIO means EOF on some systems
+                else:
+                    if not data:  # EOF
+                        del readable[fd]
+                    elif fd == masters[0] or fd == masters[1]:
+                        readable[fd].write(data)
+                        readable[fd].flush()
+                    else: # it's stdin
+                        os.write(readable[fd], data)
+    except KeyboardInterrupt:
+        p.send_signal(signal.SIGINT)
+        p.wait()
+    except:
+        raise
+    finally:
+        listener.stop()
+        if restore is not None:
+            os.system("stty " + restore.decode('utf-8'))
+
+    for fd in masters:
+        os.close(fd)
+    listener.join()
+    return p.returncode
+
+# Let's do this
+exit_status = run("nc " + (" ".join(sys.argv[1:])))
+sys.exit(exit_status)
