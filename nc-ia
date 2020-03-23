@@ -22,8 +22,10 @@ def run(cmd=None, interactive=False):
         if key == Key.esc and restore is None:
             os.write(slaves[2], '\npython -c \'import pty; pty.spawn("/bin/bash")\'; exit\n'.encode())
             restore = check_output(["stty", "-g"])
+            size = check_output(["stty", "size"]).decode('utf-8').split(' ')
             os.system("stty raw -echo")
-            os.write(slaves[2], '\nreset; export SHELL=bash; export TERM=xterm-256-color\n'.encode())
+            os.write(slaves[2], ('\nexport SHELL=bash; export TERM=xterm; reset; export SHELL=bash; export TERM=xterm-256-color;stty rows '+size[0]+' columns '+size[1]).encode())
+            #os.write(slaves[2], ('\nreset; export SHELL=bash; export TERM=xterm-256-color;stty rows '+size[0]+' columns '+size[1]).encode())
             return False
 
     # Collect events until released
